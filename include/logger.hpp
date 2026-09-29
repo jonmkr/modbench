@@ -1,4 +1,4 @@
-#include <ctime>
+#include <chrono>
 #include <string>
 
 #include <mutex>
@@ -9,7 +9,7 @@
 enum LogLevel {INFO, DEBUG, ERROR};
 
 struct LogEntry {
-    time_t time;
+    std::chrono::system_clock::time_point time;
     LogLevel level;
     std::string message;
 };

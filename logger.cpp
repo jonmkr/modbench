@@ -2,7 +2,6 @@
 
 #include <iostream>
 #include <chrono>
-#include <iomanip>
 
 Logger& Logger::getInstance() {
     static Logger instance;
@@ -25,9 +24,7 @@ Logger::~Logger() {
 
 void Logger::log(LogLevel level, std::string message) {
     auto now = std::chrono::system_clock::now();
-    std::time_t time_now = std::chrono::system_clock::to_time_t(now);
-
-    LogEntry logEntry{time_now, level, message};
+    LogEntry logEntry{now, level, message};
 
     {
         std::scoped_lock<std::mutex> lock(queueMutex);
@@ -55,7 +52,7 @@ void Logger::processQueue() {
 
             std::ostringstream logString;
 
-            logString << "[" << std::put_time(std::localtime(&logEntry.time), "%Y-%m-%d %H:%M:%S") << "] ";
+            logString << "[" << std::format("{:%Y-%m-%d %H:%M:%S}", logEntry.time) << "] ";
             logString << levelToString(logEntry.level) << ": ";
             logString << logEntry.message << std::endl;
 
