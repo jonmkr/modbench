@@ -6,6 +6,9 @@
 #include <condition_variable>
 #include <thread>
 
+#include <pcap/pcap.h>
+#include <pcapplusplus/Packet.h>
+
 #include <logger.hpp>
 #include <matcher.hpp>
 
@@ -74,5 +77,71 @@ void PacketMatcher::match(PacketContext ctx) {
             }
 
             it->second.srcIn = ctx.timestamp;
+    }
+}
+
+void capturePackets(const std::string& interface, const std::string& addr) {
+    char errbuf[PCAP_ERRBUF_SIZE];
+
+    pcap_t* handle = pcap_create(interface.c_str(), errbuf);
+    if (!handle) {
+        Logger::getInstance().log(ERROR, std::format("Failed to create pcap handle for {}: {}", interface, errbuf));
+        return;
+    }
+
+    pcap_set_snaplen(handle, 65535);
+    pcap_set_promisc(handle, 1);
+    pcap_set_timeout(handle, 1000);
+
+    int rc = pcap_activate(handle);
+    if (rc < 0) {
+        Logger::getInstance().log(ERROR, std::format("Failed to activate pcap handle for {}: {}", interface, pcap_statustostr(rc)));
+        auto err = pcap_geterr(handle);
+        if (err) Logger::getInstance().log(ERROR, err);
+
+        pcap_close(handle);
+        return;
+    }
+
+    bpf_program filter{};
+
+    if (pcap_compile(handle, &filter, "port 502", 1, PCAP_NETMASK_UNKNOWN) < 0) {
+        Logger::getInstance().log(ERROR, "Failed to compile packet filter");
+        pcap_close(handle);
+        return;
+    }
+
+    if (pcap_setfilter(handle, &filter) < 0) {
+        Logger::getInstance().log(ERROR, "Failed to set packet filter");
+        pcap_freecode(&filter);
+        pcap_close(handle);
+        return;
+    }
+
+    pcap_freecode(&filter);
+
+    pcap_pkthdr* header = nullptr;
+    const u_char* data = nullptr;
+
+    Logger::getInstance().log(INFO, std::format("Starting packet capture on {}", interface));
+
+    while (true) {
+        int rc = pcap_next_ex(handle, &header, &data);
+
+        if (rc == 1) {
+            pcpp::RawPacket raw_packet {
+                data, 
+                header->caplen, 
+                timeval{header->ts.tv_sec, header->ts.tv_usec}, 
+                false};
+
+        } else if (rc == 0){
+            continue;
+        } else if (rc == PCAP_ERROR_BREAK) {
+            Logger::getInstance().log(ERROR, "Error occured during packet capture, exiting capture loop");
+            break;
+        } else {
+            Logger::getInstance().log(ERROR, std::format("Fatal error during packet capture {}", pcap_geterr(handle)));
+        }
     }
 }

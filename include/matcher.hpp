@@ -36,3 +36,5 @@ private:
     std::unordered_map<int, PacketCheckpoints> packetHash;
 
 };
+
+void startCapture(const std::string& interface);
