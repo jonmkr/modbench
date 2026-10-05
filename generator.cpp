@@ -26,7 +26,12 @@ void switchNetns(std::string nsPath) {
 ModbusTrafficGenerator::ModbusTrafficGenerator() {}
 
 void ModbusTrafficGenerator::startResponder() {
-    responderThread = std::thread(responderTask);
+    responderThread = std::thread(&ModbusTrafficGenerator::responderTask, this);
+}
+
+void ModbusTrafficGenerator::stopResponder() {
+    stopResponderWorker = true;
+    responderThread.join();
 }
 
 void ModbusTrafficGenerator::responderTask() {
@@ -42,7 +47,7 @@ void ModbusTrafficGenerator::responderTask() {
         return;
     }
 
-    while (true){
+    while (!stopResponderWorker){
         int conn = modbus_tcp_accept(ctx, &socket);
         if (conn == -1) {
             Logger::getInstance().log(ERROR, "Responder failed to accept connection");
@@ -56,12 +61,18 @@ void ModbusTrafficGenerator::responderTask() {
             if (len == -1) {
                 Logger::getInstance().log(ERROR, "End of stream, closing connection");
                 break;
+            } else {
+                modbus_reply(ctx, req, len, mapping);
             }
             
-            modbus_reply(ctx, req, len, mapping);
         }
     }
 
+}
+
+void ModbusTrafficGenerator::startController(const std::string & responderAddr) {
+    controllerThread = std::thread(&ModbusTrafficGenerator::controllerTask, this, responderAddr);
+    controllerThread.join();
 }
 
 void ModbusTrafficGenerator::controllerTask(const std::string& responderAddr) {
