@@ -34,6 +34,8 @@ void Logger::log(LogLevel level, std::string message) {
     cv.notify_one();
 }
 
+void Logger::setLogFlags(uint8_t newLogFlags)  { logFlags = newLogFlags; }
+
 void Logger::processQueue() {
     while (true) {
             LogEntry logEntry;
@@ -56,7 +58,9 @@ void Logger::processQueue() {
             logString << levelToString(logEntry.level) << ": ";
             logString << logEntry.message << std::endl;
 
-            std::cout << logString.str();
+            if (logEntry.level & logFlags) {
+                std::cout << logString.str();
+            }
         }
 }
 

@@ -6,7 +6,11 @@
 #include <queue>
 #include <thread>
 
-enum LogLevel {INFO, DEBUG, ERROR};
+enum LogLevel : uint8_t {
+    INFO = 1 << 0, 
+    DEBUG = 1 << 1, 
+    ERROR = 1 << 2
+};
 
 struct LogEntry {
     std::chrono::system_clock::time_point time;
@@ -18,6 +22,7 @@ class Logger {
 public: 
     static Logger& getInstance();
     void log(LogLevel level, std::string message);
+    void setLogFlags(uint8_t logFlags);
 
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
@@ -28,6 +33,8 @@ private:
     std::queue<LogEntry> logQueue;
     std::thread workerThread;
     bool stopWorker;
+
+    static inline uint8_t logFlags;
 
     Logger();
     ~Logger();
