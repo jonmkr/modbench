@@ -8,79 +8,92 @@
 
 #include <pcap/pcap.h>
 #include <pcapplusplus/Packet.h>
+#include <pcapplusplus/ModbusLayer.h>
+#include <pcapplusplus/TcpLayer.h>
+#include <pcapplusplus/IPv4Layer.h>
 
 #include <logger.hpp>
 #include <matcher.hpp>
 
-PacketMatcher::PacketMatcher() : workerThread(std::thread(PacketMatcher::processQueue)) {}
-
-void PacketMatcher::enqueue(PacketState state, int transId, timeval ts) {
-    std::scoped_lock<std::mutex> lock(queueMutex);
-    packetQueue.push(PacketContext{state, transId, ts});
-    cv.notify_one();
-}
+PacketMatcher::PacketMatcher() : packetThread(std::thread(&PacketMatcher::processQueue, this)) {}
 
 
 void PacketMatcher::processQueue() {
     while (true) {
-        PacketContext context;
-
+        PacketContext ctx;
         {
-            std::unique_lock<std::mutex> lock(queueMutex);
+            std::unique_lock<std::mutex> lock(packetMutex);
             cv.wait(lock);
 
-            context = packetQueue.front();
+            ctx = packetQueue.front();
             packetQueue.pop();
         }
 
-        match(context);
+        {
+            std::scoped_lock<std::mutex> lock(transmissionMutex);
+            if (!capturedTransmissions.contains(ctx.transId)) {
+                capturedTransmissions.insert({ctx.transId, PacketCheckpoints{}});
+            }
+
+            switch (ctx.state) {
+                case SRC_OUT:
+                    capturedTransmissions.at(ctx.transId).srcOut = ctx.timestamp;
+                    break;
+                
+                case DST_IN:
+                    capturedTransmissions.at(ctx.transId).dstIn = ctx.timestamp;
+                    break;
+                
+                case DST_OUT:
+                    capturedTransmissions.at(ctx.transId).dstOut = ctx.timestamp;
+                    break;
+                
+                case SRC_IN:
+                    capturedTransmissions.at(ctx.transId).srcIn = ctx.timestamp;
+            }
+        }
     }
 }
 
-void PacketMatcher::match(PacketContext ctx) {
-    auto it = packetHash.end();
+void PacketMatcher::startStatsOutput() {
+    outputThread = std::thread([this]() {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    switch (ctx.state) {
-        case SRC_OUT:
-            if (it = packetHash.find(ctx.transId); it == packetHash.end()) {
-                Logger::getInstance().log(ERROR, "Duplicate packet captured at source egress");
-                break;
+            std::vector<PacketCheckpoints> completed;
+            {
+                std::scoped_lock<std::mutex> lock(transmissionMutex);
+                
+                for (auto it = capturedTransmissions.begin(); it != capturedTransmissions.end();) {
+                    const auto& cp = it->second;
+                
+                    if (cp.srcIn != time_point()) {
+                        completed.push_back(cp);
+                        it = capturedTransmissions.erase(it);
+                    } else {
+                        it++;
+                    }
+                }
             }
-
-            PacketCheckpoints points;
-            points.srcOut = ctx.timestamp;
-            packetHash[ctx.transId] = points;
-            break;
-        
-        case DST_IN:
-            if (it = packetHash.find(ctx.transId); it != packetHash.end()) {
-                Logger::getInstance().log(ERROR, "Missing packet reference at destination ingress");
-                break;
+            
+            std::chrono::milliseconds tot_rtt{};
+            for (PacketCheckpoints cp: completed) {
+                tot_rtt += std::chrono::duration_cast<std::chrono::milliseconds>(cp.srcIn - cp.srcOut);
             }
+ 
+            if (completed.empty()) { continue; }
 
-            it->second.dstIn = ctx.timestamp;
-            break;
-
-        case DST_OUT:
-            if (auto it = packetHash.find(ctx.transId); it != packetHash.end()) {
-                Logger::getInstance().log(ERROR, "Missing packet reference at destination egress");
-                break;
-            }
-
-            it->second.dstOut = ctx.timestamp;
-            break;
-        
-        case SRC_IN:
-            if (auto it = packetHash.find(ctx.transId); it != packetHash.end()) {
-                Logger::getInstance().log(ERROR, "Missing packet reference at source ingress");
-                break;
-            }
-
-            it->second.srcIn = ctx.timestamp;
-    }
+            Logger::getInstance().log(OUTPUT, std::format("Tx/Avg {}/{}", completed.size(), tot_rtt / completed.size()));
+        }
+    });
 }
 
-void capturePackets(const std::string& interface, const std::string& addr) {
+void PacketMatcher::startCapture(const std::string& interface, const std::string& addr, bool source) {
+    captureThreads.emplace_back(&PacketMatcher::capturePackets, this, interface, addr, source);
+}
+
+
+void PacketMatcher::capturePackets(const std::string& interface, const std::string& addr, bool source) {
     char errbuf[PCAP_ERRBUF_SIZE];
 
     pcap_t* handle = pcap_create(interface.c_str(), errbuf);
@@ -129,11 +142,55 @@ void capturePackets(const std::string& interface, const std::string& addr) {
         int rc = pcap_next_ex(handle, &header, &data);
 
         if (rc == 1) {
-            pcpp::RawPacket raw_packet {
-                data, 
-                header->caplen, 
-                timeval{header->ts.tv_sec, header->ts.tv_usec}, 
-                false};
+            timespec ts{header->ts.tv_sec, header->ts.tv_usec * 1000L};
+            pcpp::RawPacket rawPacket{data, (int)header->caplen, ts, false, pcpp::LINKTYPE_RAW};
+            pcpp::Packet parsedPacket(&rawPacket);
+            
+            PacketState state;
+            pcpp::IPv4Layer* ipv4 = parsedPacket.getLayerOfType<pcpp::IPv4Layer>();
+
+
+            if (ipv4->getSrcIPv4Address().toString() == addr) {
+                state = source ? SRC_OUT : DST_IN;
+            } else if (ipv4->getDstIPv4Address().toString() == addr) {
+                state = source ? SRC_IN : DST_OUT;
+            }
+
+            Logger::getInstance().log(DEBUG, std::format("{} {} {} {}", addr, ipv4->getSrcIPAddress().toString(), ipv4->getDstIPAddress().toString(), static_cast<int>(state)));
+
+            if (!state) {
+                Logger::getInstance().log(ERROR, std::format("Failed to determine captured packet state: {} {}", addr, ipv4->toString()));
+                continue;
+            }
+
+            pcpp::ModbusLayer* modbus;
+            pcpp::TcpLayer* tcp = parsedPacket.getLayerOfType<pcpp::TcpLayer>();
+            
+            Logger::getInstance().log(DEBUG, std::format("{}", tcp->toString()));
+
+            if (tcp->getSrcPort() == 502 || tcp->getDstPort() == 502) {
+                size_t payloadSize = tcp->getLayerPayloadSize();
+                Logger::getInstance().log(DEBUG, std::format("TCP payload size: {}", payloadSize));
+                if (payloadSize) {
+                    modbus = new pcpp::ModbusLayer(tcp->getLayerPayload(), payloadSize, tcp, &parsedPacket);
+                }
+            }
+
+            if (!modbus) {
+                Logger::getInstance().log(ERROR, std::format("No Modbus payload in packet"));
+                continue;
+            }
+
+            int transId = modbus->getTransactionId();
+            Logger::getInstance().log(DEBUG, std::format("Transaction ID: {}", transId));
+
+            time_point timestamp(std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec));
+
+            {
+                std::scoped_lock<std::mutex> lock(packetMutex);
+                packetQueue.push(PacketContext{state, transId, timestamp});
+                cv.notify_one();
+            }
 
         } else if (rc == 0){
             continue;

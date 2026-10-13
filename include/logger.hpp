@@ -9,7 +9,8 @@
 enum LogLevel : uint8_t {
     INFO = 1 << 0, 
     DEBUG = 1 << 1, 
-    ERROR = 1 << 2
+    ERROR = 1 << 2,
+    OUTPUT = 1 << 3
 };
 
 struct LogEntry {

@@ -76,40 +76,35 @@ void ModbusTrafficGenerator::startController(const std::string & responderAddr) 
 }
 
 void ModbusTrafficGenerator::controllerTask(const std::string& responderAddr) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> rand_bit(0, 1);
-    std::uniform_int_distribution<int> rand_addr(0, 435);
-
+    
     modbus_t* ctx = modbus_new_tcp(responderAddr.c_str(), 502);
 
-    if (modbus_connect(ctx) == 0) {
-        Logger::getInstance().log(INFO, "Controller connected successfully");
-    } else {
+    int connected;
+    for (int i = 0; i < 3; i++) {
+        connected = modbus_connect(ctx);
+
+        if (connected == 0) {
+            Logger::getInstance().log(INFO, "Controller connected successfully");
+            break;
+        } else {
+            Logger::getInstance().log(DEBUG, "Controller failed to connect, retrying");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+
+    if (!connected == -1) {
         Logger::getInstance().log(ERROR, std::format("Controller failed to connect: {}", modbus_strerror(errno)));
         return;
     }
 
-    uint8_t* data = new uint8_t[64];
 
-    for (int i = 0; i < 100; i++) {
-        for (int j = 0; j < 64; j++) {
-            data[j] = rand_bit(gen);
-        }
-
-        int sent = modbus_write_bits(ctx, rand_addr(gen), 64, data);
+    while (true) {
+        int sent = modbus_write_bit(ctx, 0, true);
         if (sent == -1) {
             Logger::getInstance().log(ERROR, "Failed to send instructions");
         }
     }
 
-    uint8_t* dest = new uint8_t;
-    for (int i = 0; i < 500 ; i++) {
-        int read = modbus_read_bits(ctx, i, 1, dest);
-        if (read == -1) {
-            Logger::getInstance().log(ERROR, "Failed to read reply");
-        }
-    }
 
     modbus_close(ctx);
     modbus_free(ctx);
