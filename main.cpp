@@ -9,6 +9,8 @@ int main() {
     PacketMatcher matcher;
 
     matcher.startCapture("ogstun", "10.45.0.1", true);
+    matcher.startCapture("wwp0s20f0u9i4", "10.45.0.2", false);
+
     matcher.startStatsOutput();
 
     std::this_thread::sleep_for(std::chrono::seconds(1));

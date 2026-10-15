@@ -14,6 +14,7 @@
 
 #include <logger.hpp>
 #include <matcher.hpp>
+#include <generator.hpp>
 
 PacketMatcher::PacketMatcher() : packetThread(std::thread(&PacketMatcher::processQueue, this)) {}
 
@@ -29,28 +30,40 @@ void PacketMatcher::processQueue() {
             packetQueue.pop();
         }
 
+        
         {
-            std::scoped_lock<std::mutex> lock(transmissionMutex);
+            std::unique_lock<std::mutex> lock(transmissionMutex);
             if (!capturedTransmissions.contains(ctx.transId)) {
                 capturedTransmissions.insert({ctx.transId, PacketCheckpoints{}});
             }
 
+            PacketCheckpoints cp = capturedTransmissions.at(ctx.transId);
+            
             switch (ctx.state) {
                 case SRC_OUT:
-                    capturedTransmissions.at(ctx.transId).srcOut = ctx.timestamp;
-                    break;
+                cp.srcOut = ctx.timestamp;
+                cp.flags |= 0b0001;
+                break;
                 
                 case DST_IN:
-                    capturedTransmissions.at(ctx.transId).dstIn = ctx.timestamp;
-                    break;
+                cp.dstIn = ctx.timestamp;
+                cp.flags |= 0b0010;
+                break;
                 
                 case DST_OUT:
-                    capturedTransmissions.at(ctx.transId).dstOut = ctx.timestamp;
-                    break;
+                cp.dstOut = ctx.timestamp;
+                cp.flags |= 0b0100;
+                break;
                 
                 case SRC_IN:
-                    capturedTransmissions.at(ctx.transId).srcIn = ctx.timestamp;
+                cp.srcIn = ctx.timestamp;
+                cp.flags |= 0b1000;
+                break;
+                default:
+                Logger::getInstance().log(ERROR, "Unknown packet state");
             }
+            
+            capturedTransmissions.at(ctx.transId) = cp;
         }
     }
 }
@@ -58,32 +71,43 @@ void PacketMatcher::processQueue() {
 void PacketMatcher::startStatsOutput() {
     outputThread = std::thread([this]() {
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::seconds(5));
 
             std::vector<PacketCheckpoints> completed;
             {
-                std::scoped_lock<std::mutex> lock(transmissionMutex);
-                
+                std::unique_lock<std::mutex> lock(transmissionMutex);
+
                 for (auto it = capturedTransmissions.begin(); it != capturedTransmissions.end();) {
-                    const auto& cp = it->second;
-                
-                    if (cp.srcIn != time_point()) {
+                    const auto cp = it->second;
+
+                    if ((cp.flags & 0b1111) == 0b1111) {
                         completed.push_back(cp);
                         it = capturedTransmissions.erase(it);
                     } else {
                         it++;
                     }
                 }
+
+                //Logger::getInstance().log(INFO, std::format("COMPLETE: {} PARTIAL: {}", completed.size(), capturedTransmissions.size()));
             }
-            
-            std::chrono::milliseconds tot_rtt{};
+
+            std::chrono::nanoseconds totDstIn{};
+            std::chrono::nanoseconds totDstOut{};
+            std::chrono::nanoseconds totSrcIn{};
+
             for (PacketCheckpoints cp: completed) {
-                tot_rtt += std::chrono::duration_cast<std::chrono::milliseconds>(cp.srcIn - cp.srcOut);
+                totDstIn += cp.dstIn - cp.srcOut;
+                totDstOut += cp.dstOut - cp.dstIn;
+                totSrcIn += cp.srcIn - cp.dstOut;
             }
- 
+
             if (completed.empty()) { continue; }
 
-            Logger::getInstance().log(OUTPUT, std::format("Tx/Avg {}/{}", completed.size(), tot_rtt / completed.size()));
+            std::chrono::milliseconds avgDstIn = std::chrono::duration_cast<std::chrono::milliseconds>(totDstIn / completed.size());
+            std::chrono::microseconds avgDstOut = std::chrono::duration_cast<std::chrono::microseconds>(totDstOut / completed.size());
+            std::chrono::milliseconds avgSrcIn = std::chrono::duration_cast<std::chrono::milliseconds>(totSrcIn / completed.size());
+
+            Logger::getInstance().log(OUTPUT, std::format("(TX) DstIn/DstOut/SrcIn ({}) {}/{}/{}", completed.size(), avgDstIn, avgDstOut, avgSrcIn));
         }
     });
 }
@@ -94,6 +118,10 @@ void PacketMatcher::startCapture(const std::string& interface, const std::string
 
 
 void PacketMatcher::capturePackets(const std::string& interface, const std::string& addr, bool source) {
+    if (!source) {
+        switchNetns("/run/netns/ue");
+    }
+
     char errbuf[PCAP_ERRBUF_SIZE];
 
     pcap_t* handle = pcap_create(interface.c_str(), errbuf);
@@ -118,7 +146,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
 
     bpf_program filter{};
 
-    if (pcap_compile(handle, &filter, "port 502", 1, PCAP_NETMASK_UNKNOWN) < 0) {
+    if (pcap_compile(handle, &filter, "tcp port 502", 1, PCAP_NETMASK_UNKNOWN) < 0) {
         Logger::getInstance().log(ERROR, "Failed to compile packet filter");
         pcap_close(handle);
         return;
@@ -138,6 +166,8 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
 
     Logger::getInstance().log(INFO, std::format("Starting packet capture on {}", interface));
 
+    Logger::getInstance().log(INFO, std::format("Data link: {}", pcap_datalink(handle)));
+
     while (true) {
         int rc = pcap_next_ex(handle, &header, &data);
 
@@ -146,49 +176,50 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
             pcpp::RawPacket rawPacket{data, (int)header->caplen, ts, false, pcpp::LINKTYPE_RAW};
             pcpp::Packet parsedPacket(&rawPacket);
             
-            PacketState state;
+            std::optional<PacketState> state;
             pcpp::IPv4Layer* ipv4 = parsedPacket.getLayerOfType<pcpp::IPv4Layer>();
 
-
-            if (ipv4->getSrcIPv4Address().toString() == addr) {
-                state = source ? SRC_OUT : DST_IN;
-            } else if (ipv4->getDstIPv4Address().toString() == addr) {
-                state = source ? SRC_IN : DST_OUT;
+            if (!ipv4) {
+                Logger::getInstance().log(ERROR, "Non-ipv4 packet received");
+                continue;
             }
 
-            Logger::getInstance().log(DEBUG, std::format("{} {} {} {}", addr, ipv4->getSrcIPAddress().toString(), ipv4->getDstIPAddress().toString(), static_cast<int>(state)));
+            if (ipv4->getSrcIPv4Address().toString() == addr) {
+                state = source ? SRC_OUT : DST_OUT;
+            } else if (ipv4->getDstIPv4Address().toString() == addr) {
+                state = source ? SRC_IN : DST_IN;
+            }
 
-            if (!state) {
+            if (!state.has_value()) {
                 Logger::getInstance().log(ERROR, std::format("Failed to determine captured packet state: {} {}", addr, ipv4->toString()));
                 continue;
             }
 
-            pcpp::ModbusLayer* modbus;
+            pcpp::ModbusLayer* modbus = nullptr;
             pcpp::TcpLayer* tcp = parsedPacket.getLayerOfType<pcpp::TcpLayer>();
             
             Logger::getInstance().log(DEBUG, std::format("{}", tcp->toString()));
 
             if (tcp->getSrcPort() == 502 || tcp->getDstPort() == 502) {
                 size_t payloadSize = tcp->getLayerPayloadSize();
-                Logger::getInstance().log(DEBUG, std::format("TCP payload size: {}", payloadSize));
                 if (payloadSize) {
                     modbus = new pcpp::ModbusLayer(tcp->getLayerPayload(), payloadSize, tcp, &parsedPacket);
                 }
             }
 
             if (!modbus) {
-                Logger::getInstance().log(ERROR, std::format("No Modbus payload in packet"));
+                Logger::getInstance().log(INFO, std::format("{}", tcp->toString()));
                 continue;
             }
 
             int transId = modbus->getTransactionId();
-            Logger::getInstance().log(DEBUG, std::format("Transaction ID: {}", transId));
+            delete modbus;
 
             time_point timestamp(std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec));
 
             {
-                std::scoped_lock<std::mutex> lock(packetMutex);
-                packetQueue.push(PacketContext{state, transId, timestamp});
+                std::unique_lock<std::mutex> lock(packetMutex);
+                packetQueue.push(PacketContext{state.value(), transId, timestamp});
                 cv.notify_one();
             }
 

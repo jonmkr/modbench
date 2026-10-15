@@ -15,6 +15,7 @@ enum PacketState {
 };
 
 struct PacketCheckpoints {
+    uint8_t flags = 0x0000;
     time_point srcOut;
     time_point dstIn;
     time_point dstOut;
