@@ -22,18 +22,6 @@ Logger::~Logger() {
     }
 }
 
-void Logger::log(LogLevel level, std::string message) {
-    auto now = std::chrono::system_clock::now();
-    LogEntry logEntry{now, level, message};
-
-    {
-        std::scoped_lock<std::mutex> lock(queueMutex);
-        logQueue.push(logEntry);
-    }
-
-    cv.notify_one();
-}
-
 void Logger::setLogFlags(uint8_t newLogFlags)  { logFlags = newLogFlags; }
 
 void Logger::processQueue() {

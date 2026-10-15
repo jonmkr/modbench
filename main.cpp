@@ -3,7 +3,7 @@
 #include <matcher.hpp>
 
 int main() {
-    Logger::getInstance().setLogFlags(INFO | ERROR | OUTPUT);
+    Logger::getInstance().setLogFlags(INFO | ERROR | OUTPUT | DEBUG);
 
     ModbusTrafficGenerator generator;
     PacketMatcher matcher;

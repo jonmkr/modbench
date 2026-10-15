@@ -22,11 +22,23 @@ struct LogEntry {
 class Logger {
 public: 
     static Logger& getInstance();
-    void log(LogLevel level, std::string message);
     void setLogFlags(uint8_t logFlags);
-
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
+    
+    template <typename... _Args>
+    inline void log(LogLevel level, std::string_view fmt, _Args&&... args) {
+        auto now = std::chrono::system_clock::now();
+        std::string message = std::vformat(fmt, std::make_format_args(args...));
+        LogEntry logEntry{now, level, message};
+
+        {
+            std::scoped_lock<std::mutex> lock(queueMutex);
+            logQueue.push(logEntry);
+        }
+
+        cv.notify_one();
+    }
 
 private:
     std::mutex queueMutex;

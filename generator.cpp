@@ -43,7 +43,7 @@ void ModbusTrafficGenerator::responderTask() {
 
     int socket = modbus_tcp_listen(ctx, 1);
     if (socket == -1) {
-        Logger::getInstance().log(ERROR, std::format("Failed to open socket: {}", modbus_strerror(errno)));
+        Logger::getInstance().log(ERROR, "Failed to open socket: {}", modbus_strerror(errno));
         return;
     }
 
@@ -93,7 +93,7 @@ void ModbusTrafficGenerator::controllerTask(const std::string& responderAddr) {
     }
 
     if (!connected == -1) {
-        Logger::getInstance().log(ERROR, std::format("Controller failed to connect: {}", modbus_strerror(errno)));
+        Logger::getInstance().log(ERROR, "Controller failed to connect: {}", modbus_strerror(errno));
         return;
     }
 

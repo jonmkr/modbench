@@ -88,7 +88,7 @@ void PacketMatcher::startStatsOutput() {
                     }
                 }
 
-                //Logger::getInstance().log(INFO, std::format("COMPLETE: {} PARTIAL: {}", completed.size(), capturedTransmissions.size()));
+                Logger::getInstance().log(DEBUG, "Complete: {} Partial: {}", completed.size(), capturedTransmissions.size());
             }
 
             std::chrono::nanoseconds totDstIn{};
@@ -107,7 +107,7 @@ void PacketMatcher::startStatsOutput() {
             std::chrono::microseconds avgDstOut = std::chrono::duration_cast<std::chrono::microseconds>(totDstOut / completed.size());
             std::chrono::milliseconds avgSrcIn = std::chrono::duration_cast<std::chrono::milliseconds>(totSrcIn / completed.size());
 
-            Logger::getInstance().log(OUTPUT, std::format("(TX) DstIn/DstOut/SrcIn ({}) {}/{}/{}", completed.size(), avgDstIn, avgDstOut, avgSrcIn));
+            Logger::getInstance().log(OUTPUT, "({}) {} {} {} {}", completed.size(), avgDstIn, avgDstOut, avgSrcIn, avgDstIn + avgSrcIn);
         }
     });
 }
@@ -126,7 +126,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
 
     pcap_t* handle = pcap_create(interface.c_str(), errbuf);
     if (!handle) {
-        Logger::getInstance().log(ERROR, std::format("Failed to create pcap handle for {}: {}", interface, errbuf));
+        Logger::getInstance().log(ERROR, "Failed to create pcap handle for {}: {}", interface, errbuf);
         return;
     }
 
@@ -136,7 +136,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
 
     int rc = pcap_activate(handle);
     if (rc < 0) {
-        Logger::getInstance().log(ERROR, std::format("Failed to activate pcap handle for {}: {}", interface, pcap_statustostr(rc)));
+        Logger::getInstance().log(ERROR, "Failed to activate pcap handle for {}: {}", interface, pcap_statustostr(rc));
         auto err = pcap_geterr(handle);
         if (err) Logger::getInstance().log(ERROR, err);
 
@@ -164,9 +164,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
     pcap_pkthdr* header = nullptr;
     const u_char* data = nullptr;
 
-    Logger::getInstance().log(INFO, std::format("Starting packet capture on {}", interface));
-
-    Logger::getInstance().log(INFO, std::format("Data link: {}", pcap_datalink(handle)));
+    Logger::getInstance().log(INFO, "Starting packet capture on {}", interface);
 
     while (true) {
         int rc = pcap_next_ex(handle, &header, &data);
@@ -191,15 +189,13 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
             }
 
             if (!state.has_value()) {
-                Logger::getInstance().log(ERROR, std::format("Failed to determine captured packet state: {} {}", addr, ipv4->toString()));
+                Logger::getInstance().log(ERROR, "Unable to determine packet state: [{}]", ipv4->toString());
                 continue;
             }
 
             pcpp::ModbusLayer* modbus = nullptr;
             pcpp::TcpLayer* tcp = parsedPacket.getLayerOfType<pcpp::TcpLayer>();
             
-            Logger::getInstance().log(DEBUG, std::format("{}", tcp->toString()));
-
             if (tcp->getSrcPort() == 502 || tcp->getDstPort() == 502) {
                 size_t payloadSize = tcp->getLayerPayloadSize();
                 if (payloadSize) {
@@ -208,7 +204,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
             }
 
             if (!modbus) {
-                Logger::getInstance().log(INFO, std::format("{}", tcp->toString()));
+                Logger::getInstance().log(DEBUG, "[{}]", tcp->toString());
                 continue;
             }
 
@@ -229,7 +225,7 @@ void PacketMatcher::capturePackets(const std::string& interface, const std::stri
             Logger::getInstance().log(ERROR, "Error occured during packet capture, exiting capture loop");
             break;
         } else {
-            Logger::getInstance().log(ERROR, std::format("Fatal error during packet capture {}", pcap_geterr(handle)));
+            Logger::getInstance().log(ERROR, "Fatal error during packet capture {}", pcap_geterr(handle));
         }
     }
 }
