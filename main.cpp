@@ -7,13 +7,18 @@ int main() {
     Logger& logger = Logger::getInstance();
     Config& config = Config::getInstance();
 
+    if (!config.loadConfig("setup.conf")) {
+        logger.log(ERROR, "Failed to load config file");
+        return 1;
+    }
+
     logger.setLogFlags(INFO | ERROR | OUTPUT | DEBUG);
 
     ModbusTrafficGenerator generator;
     PacketMatcher matcher;
 
-    matcher.startCapture("ogstun", "10.45.0.1", true);
-    matcher.startCapture("wwp0s20f0u9i4", "10.45.0.2", false);
+    matcher.startCapture(config.at("localInt"), config.at("localAddr"), true);
+    matcher.startCapture(config.at("remoteInt"), config.at("remoteAddr"), false);
 
     matcher.startStatsOutput();
 
@@ -23,9 +28,8 @@ int main() {
     generator.startResponder();
     logger.log(INFO, "Responder initialized");
 
-
     logger.log(DEBUG, "Initializing controller");
-    generator.startController("10.45.0.2");
+    generator.startController(config.at("remoteAddr"));
 
     logger.log(DEBUG, "Stopping responder");
     generator.stopResponder();
