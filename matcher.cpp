@@ -30,7 +30,6 @@ void PacketMatcher::processQueue() {
             packetQueue.pop();
         }
 
-        
         {
             std::unique_lock<std::mutex> lock(transmissionMutex);
             if (!capturedTransmissions.contains(ctx.transId)) {
@@ -38,27 +37,29 @@ void PacketMatcher::processQueue() {
             }
 
             PacketCheckpoints cp = capturedTransmissions.at(ctx.transId);
+
+            if ((cp.flags & ctx.state) == ctx.state)
+                Logger::getInstance().log(INFO, "Packet state {} already set for transmission {}", static_cast<int>(ctx.state), ctx.transId);
+
+            cp.flags |= ctx.state;
             
             switch (ctx.state) {
                 case SRC_OUT:
                 cp.srcOut = ctx.timestamp;
-                cp.flags |= 0b0001;
                 break;
                 
                 case DST_IN:
                 cp.dstIn = ctx.timestamp;
-                cp.flags |= 0b0010;
                 break;
                 
                 case DST_OUT:
                 cp.dstOut = ctx.timestamp;
-                cp.flags |= 0b0100;
                 break;
                 
                 case SRC_IN:
                 cp.srcIn = ctx.timestamp;
-                cp.flags |= 0b1000;
                 break;
+
                 default:
                 Logger::getInstance().log(ERROR, "Unknown packet state");
             }
@@ -71,7 +72,7 @@ void PacketMatcher::processQueue() {
 void PacketMatcher::startStatsOutput() {
     outputThread = std::thread([this]() {
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::this_thread::sleep_for(std::chrono::seconds(2));
 
             std::vector<PacketCheckpoints> completed;
             {
@@ -107,7 +108,7 @@ void PacketMatcher::startStatsOutput() {
             std::chrono::microseconds avgDstOut = std::chrono::duration_cast<std::chrono::microseconds>(totDstOut / completed.size());
             std::chrono::milliseconds avgSrcIn = std::chrono::duration_cast<std::chrono::milliseconds>(totSrcIn / completed.size());
 
-            Logger::getInstance().log(OUTPUT, "({}) {} {} {} {}", completed.size(), avgDstIn, avgDstOut, avgSrcIn, avgDstIn + avgSrcIn);
+            Logger::getInstance().log(OUTPUT, "({}) {} {} {}", completed.size(), avgDstIn, avgDstOut, avgSrcIn);
         }
     });
 }

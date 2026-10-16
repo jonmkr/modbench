@@ -7,15 +7,15 @@
 
 using time_point = std::chrono::system_clock::time_point;
 
-enum PacketState {
-    SRC_OUT = 1, 
-    DST_IN, 
-    DST_OUT, 
-    SRC_IN
+enum PacketState : uint8_t {
+    SRC_OUT = 0b0001, 
+    DST_IN = 0b0010, 
+    DST_OUT = 0b0100, 
+    SRC_IN = 0b1000
 };
 
 struct PacketCheckpoints {
-    uint8_t flags = 0x0000;
+    uint8_t flags = 0b0000;
     time_point srcOut;
     time_point dstIn;
     time_point dstOut;
